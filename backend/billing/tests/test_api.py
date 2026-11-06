@@ -47,7 +47,7 @@ def test_admin_runs_billing(admin_client, admin_user, active_contract):
 
     assert resp.status_code == 201
     run = BillingRun.objects.get()
-    assert resp.data == {'run_id': run.id, 'invoices_generated': 1, 'status': 'completed'}
+    assert resp.data == {'run_id': run.id, 'invoices_generated': 1, 'emails_failed': 0, 'status': 'completed'}
     assert run.run_by == admin_user
 
 
