@@ -128,6 +128,10 @@ class TimesheetListCreateView(APIView):
         return Response(TimesheetEntrySerializer(entry).data, status=status.HTTP_201_CREATED)
 
 
+ADMIN_EDITABLE_FIELDS = {'status', 'rejection_reason'}
+FREELANCER_EDITABLE_FIELDS = {'hours', 'date'}
+
+
 class TimesheetDetailView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -163,16 +167,58 @@ class TimesheetDetailView(APIView):
                 status=status.HTTP_409_CONFLICT,
             )
 
-        new_status = request.data.get('status')
-        rejection_reason = request.data.get('rejection_reason')
+        # Billing invoices whatever is approved, so each role may only change
+        # what it owns: admins decide entries, freelancers correct their own
+        # undecided hours. Anything else, such as moving an entry to another
+        # contract, is refused.
+        is_admin = hasattr(user, 'company_admin')
+        fields = set(request.data.keys())
 
-        if new_status == TimesheetEntry.STATUS_REJECTED and not rejection_reason:
+        if not is_admin and fields & ADMIN_EDITABLE_FIELDS:
             return Response(
-                {'rejection_reason': 'This field is required when rejecting an entry.'},
+                {'detail': 'Only company admins can approve or reject entries.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        disallowed = fields - (ADMIN_EDITABLE_FIELDS if is_admin else FREELANCER_EDITABLE_FIELDS)
+        if disallowed:
+            return Response(
+                {field: 'This field cannot be changed.' for field in sorted(disallowed)},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        serializer = TimesheetEntrySerializer(entry, data=request.data, partial=True)
+        if is_admin:
+            new_status = request.data.get('status')
+            rejection_reason = request.data.get('rejection_reason')
+
+            if new_status not in (TimesheetEntry.STATUS_APPROVED, TimesheetEntry.STATUS_REJECTED):
+                return Response(
+                    {'status': 'Must be "approved" or "rejected".'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if entry.status == TimesheetEntry.STATUS_DRAFT:
+                return Response(
+                    {'detail': 'This entry has not been submitted yet.'},
+                    status=status.HTTP_409_CONFLICT,
+                )
+            if new_status == TimesheetEntry.STATUS_REJECTED and not rejection_reason:
+                return Response(
+                    {'rejection_reason': 'This field is required when rejecting an entry.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            # An approved entry never keeps a reason from an earlier rejection.
+            data = {
+                'status': new_status,
+                'rejection_reason': rejection_reason if new_status == TimesheetEntry.STATUS_REJECTED else None,
+            }
+        else:
+            if entry.status not in (TimesheetEntry.STATUS_DRAFT, TimesheetEntry.STATUS_SUBMITTED):
+                return Response(
+                    {'detail': 'Only draft or submitted entries can be edited.'},
+                    status=status.HTTP_409_CONFLICT,
+                )
+            data = request.data
+
+        serializer = TimesheetEntrySerializer(entry, data=data, partial=True)
         serializer.is_valid(raise_exception=True)
         serializer.save()
         return Response(serializer.data)
