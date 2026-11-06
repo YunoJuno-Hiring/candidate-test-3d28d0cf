@@ -142,3 +142,64 @@ def test_reseeding_after_billing_leaves_invoiced_entries_alone():
     call_command('seed', stdout=io.StringIO())
 
     assert TimesheetEntry.objects.get(pk=line.timesheet_entry_id).hours == Decimal('1.00')
+
+
+# --- issued billing records are view-only in Django admin ---
+
+@pytest.mark.django_db
+@pytest.mark.parametrize('model_name', ['BillingRun', 'Invoice', 'InvoiceLine', 'InvoiceEmail'])
+def test_billing_records_are_view_only_in_admin(invoiced_entry, rf, model_name):
+    from django.contrib.admin.sites import site
+    from django.contrib.auth.models import User
+
+    from billing import models
+
+    superuser = User.objects.create_superuser('root@test.test', 'root@test.test', 'x')
+    request = rf.get('/admin/')
+    request.user = superuser
+    model = getattr(models, model_name)
+    model_admin = site._registry[model]
+    obj = model.objects.first()
+
+    assert model_admin.has_view_permission(request, obj)
+    assert not model_admin.has_add_permission(request)
+    assert not model_admin.has_change_permission(request, obj)
+    assert not model_admin.has_delete_permission(request, obj)
+
+
+@pytest.mark.django_db
+def test_invoice_cannot_be_deleted_through_admin(admin_client_session, invoiced_entry):
+    # Deleting an invoice would free its entries to be billed again.
+    from billing.models import Invoice
+
+    invoice = Invoice.objects.get()
+    resp = admin_client_session.post(f'/admin/billing/invoice/{invoice.id}/delete/', {'post': 'yes'})
+
+    assert resp.status_code == 403
+    assert Invoice.objects.filter(pk=invoice.pk).exists()
+
+
+@pytest.fixture
+def admin_client_session(client):
+    from django.contrib.auth.models import User
+
+    client.force_login(User.objects.create_superuser('root@test.test', 'root@test.test', 'x'))
+    return client
+
+
+@pytest.mark.django_db
+def test_issued_invoice_cannot_be_deleted_by_any_route(invoiced_entry):
+    # Not only the admin: code or the shell can't delete it either, so its
+    # entries can never be freed to be billed twice.
+    from django.db.models import ProtectedError
+
+    from billing.models import Invoice
+
+    invoice = Invoice.objects.get()
+    with pytest.raises(ProtectedError):
+        invoice.delete()
+    with pytest.raises(ProtectedError):
+        Invoice.objects.all().delete()
+
+    assert InvoiceLine.objects.filter(timesheet_entry=invoiced_entry).exists()
+    assert invoice.emails.count() == 2

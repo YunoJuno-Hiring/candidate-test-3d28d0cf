@@ -8,8 +8,9 @@ from contracts.models import TimesheetEntry
 # Invoices are financial records, so references from billing to the rest of the
 # system use PROTECT rather than the CASCADE used elsewhere in the codebase:
 # deleting a company, freelancer, user or timesheet entry must fail instead of
-# silently deleting invoices that have already been issued. Within billing
-# (invoice -> lines, invoice -> emails) CASCADE is fine.
+# silently deleting invoices that have already been issued. Invoices protect
+# their own lines and emails too: deleting an invoice would free its timesheet
+# entries to be billed again, so an issued invoice can't be deleted at all.
 
 
 class BillingRun(models.Model):
@@ -78,7 +79,7 @@ class InvoiceLine(models.Model):
     entry is billed at most once.
     """
 
-    invoice = models.ForeignKey(Invoice, on_delete=models.CASCADE, related_name='lines')
+    invoice = models.ForeignKey(Invoice, on_delete=models.PROTECT, related_name='lines')
     timesheet_entry = models.OneToOneField(
         TimesheetEntry, on_delete=models.PROTECT, related_name='invoice_line'
     )
@@ -112,7 +113,7 @@ class InvoiceEmail(models.Model):
         (STATUS_FAILED, 'Failed'),
     ]
 
-    invoice = models.ForeignKey(Invoice, on_delete=models.CASCADE, related_name='emails')
+    invoice = models.ForeignKey(Invoice, on_delete=models.PROTECT, related_name='emails')
     recipient = models.EmailField()
     status = models.CharField(max_length=10, choices=STATUS_CHOICES, default=STATUS_PENDING)
     attempts = models.PositiveIntegerField(default=0)
