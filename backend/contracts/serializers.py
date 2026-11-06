@@ -57,31 +57,44 @@ class TimesheetEntrySerializer(serializers.ModelSerializer):
         return value
 
     def validate(self, attrs):
-        # Only when the work itself is written (logging or correcting hours);
-        # an admin approving or rejecting an entry isn't re-validated, so
-        # submitted work on a since-closed contract can still be decided.
-        if not attrs.keys() & {'contract', 'date', 'hours'}:
+        instance = self.instance
+        # The work rules apply when the work itself is written (logging or
+        # correcting hours). An admin approving or rejecting an entry isn't
+        # re-validated, so submitted work on a since-closed contract can still
+        # be decided.
+        writes_work = bool(attrs.keys() & {'contract', 'date', 'hours'})
+        # Resubmitting rejected work makes its hours count again, so the daily
+        # total must be re-checked even when nothing else changes.
+        resubmits = bool(
+            instance
+            and instance.status == TimesheetEntry.STATUS_REJECTED
+            and attrs.get('status') == TimesheetEntry.STATUS_SUBMITTED
+        )
+        if not (writes_work or resubmits):
             return attrs
 
-        instance = self.instance
         contract = attrs.get('contract', instance.contract if instance else None)
         date = attrs.get('date', instance.date if instance else None)
         hours = attrs.get('hours', instance.hours if instance else None)
         if contract is None or date is None or hours is None:
             return attrs  # required-field errors are reported by the fields
 
-        if contract.status != Contract.STATUS_ACTIVE:
-            raise serializers.ValidationError({'contract': 'This contract is closed.'})
-        if date > timezone.localdate():
-            raise serializers.ValidationError({'date': 'Cannot log hours for a future date.'})
-        if not contract.start_date <= date <= contract.end_date:
-            raise serializers.ValidationError(
-                {'date': f'Must be within the contract ({contract.start_date} to {contract.end_date}).'}
-            )
+        if writes_work:
+            if contract.status != Contract.STATUS_ACTIVE:
+                raise serializers.ValidationError({'contract': 'This contract is closed.'})
+            if date > timezone.localdate():
+                raise serializers.ValidationError({'date': 'Cannot log hours for a future date.'})
+            if not contract.start_date <= date <= contract.end_date:
+                raise serializers.ValidationError(
+                    {'date': f'Must be within the contract ({contract.start_date} to {contract.end_date}).'}
+                )
 
-        # A day has 24 hours across all of the freelancer's contracts.
+        # A day has 24 hours across all of the freelancer's contracts. Rejected
+        # hours don't count: they won't be billed, and would otherwise block
+        # genuine work logged on another contract that day.
         other_hours = (
             TimesheetEntry.objects.filter(contract__freelancer=contract.freelancer, date=date)
+            .exclude(status=TimesheetEntry.STATUS_REJECTED)
             .exclude(pk=instance.pk if instance else None)
             .aggregate(total=Sum('hours'))['total']
         ) or Decimal('0')

@@ -85,6 +85,56 @@ def test_editing_an_entry_does_not_count_its_old_hours(freelancer_client, contra
     assert resp.status_code == 200
 
 
+
+@pytest.fixture
+def rejected_16h(contract):
+    return TimesheetEntry.objects.create(
+        contract=contract, date=YESTERDAY, hours=Decimal('16'), status='rejected', rejection_reason='Too many hours.'
+    )
+
+
+@pytest.mark.django_db
+def test_rejected_hours_do_not_count_towards_the_daily_total(freelancer_client, rejected_16h, second_contract):
+    resp = _log(freelancer_client, second_contract, hours='16')
+
+    assert resp.status_code == 201
+
+
+@pytest.mark.django_db
+def test_resubmitting_rejected_work_rechecks_the_daily_total(freelancer_client, rejected_16h, second_contract):
+    # Its hours count again once resubmitted, so 16h + 16h must be refused.
+    _log(freelancer_client, second_contract, hours='16')
+
+    resp = freelancer_client.patch(f'/api/timesheets/{rejected_16h.id}/', {'status': 'submitted'})
+
+    assert resp.status_code == 400
+    assert 'hours' in resp.data
+    rejected_16h.refresh_from_db()
+    assert rejected_16h.status == 'rejected'
+
+
+@pytest.mark.django_db
+def test_correcting_rejected_work_to_fit_the_day_is_accepted(freelancer_client, rejected_16h, second_contract):
+    _log(freelancer_client, second_contract, hours='16')
+
+    resp = freelancer_client.patch(f'/api/timesheets/{rejected_16h.id}/', {'hours': '8'})
+
+    assert resp.status_code == 200
+    rejected_16h.refresh_from_db()
+    assert (rejected_16h.hours, rejected_16h.status) == (Decimal('8.00'), 'submitted')
+
+
+@pytest.mark.django_db
+def test_rejected_work_on_a_since_closed_contract_can_be_resubmitted(freelancer_client, rejected_16h, contract):
+    # Resubmitting only re-checks the daily total, not the contract rules:
+    # the work was done while the contract was active.
+    contract.status = Contract.STATUS_CLOSED
+    contract.save()
+
+    resp = freelancer_client.patch(f'/api/timesheets/{rejected_16h.id}/', {'status': 'submitted'})
+
+    assert resp.status_code == 200
+
 # --- dates ---
 
 @pytest.mark.django_db
