@@ -7,7 +7,7 @@ import pytest
 from django.core import mail
 
 from billing.models import Invoice, InvoiceEmail
-from billing.services import run_billing, send_invoice_email
+from billing.services import SEND_ALREADY_SENT, SEND_SENT, SEND_SKIPPED, run_billing, send_invoice_email
 from contracts.models import TimesheetEntry
 
 OCTOBER = datetime.date(2026, 10, 1)
@@ -107,7 +107,7 @@ def test_sent_email_is_never_sent_again(northstar, admin_user, billable, django_
         run_billing(northstar, OCTOBER, admin_user)
     email = InvoiceEmail.objects.first()
 
-    assert send_invoice_email(email.id) is True
+    assert send_invoice_email(email.id) == SEND_ALREADY_SENT
 
     email.refresh_from_db()
     assert email.attempts == 1
@@ -121,7 +121,7 @@ def test_failed_email_can_be_sent_later(northstar, admin_user, billable, django_
             run_billing(northstar, OCTOBER, admin_user)
     email = InvoiceEmail.objects.first()
 
-    assert send_invoice_email(email.id) is True
+    assert send_invoice_email(email.id) == SEND_SENT
 
     email.refresh_from_db()
     assert (email.status, email.attempts, email.last_error) == (InvoiceEmail.STATUS_SENT, 2, '')
@@ -211,7 +211,7 @@ def test_an_error_escaping_one_send_does_not_stop_the_others_or_fail_the_run(adm
     # email is still sent, and the committed run still returns 201.
     from django.db import DatabaseError
 
-    with mock.patch('billing.services.send_invoice_email', side_effect=[DatabaseError('connection lost'), True]) as send:
+    with mock.patch('billing.services.send_invoice_email', side_effect=[DatabaseError('connection lost'), SEND_SENT]) as send:
         resp = admin_client.post('/api/billing/runs/', {'month': '2026-10'})
 
     assert resp.status_code == 201
@@ -223,7 +223,7 @@ def test_an_error_escaping_one_send_does_not_stop_the_others_or_fail_the_run(adm
 def test_billing_run_reports_emails_left_pending(admin_client, billable):
     # e.g. skipped because the retry command held the row at that moment: not
     # failed, but not sent either, so the run isn't reported as completed.
-    with mock.patch('billing.services.send_invoice_email', return_value=False):
+    with mock.patch('billing.services.send_invoice_email', return_value=SEND_SKIPPED):
         resp = admin_client.post('/api/billing/runs/', {'month': '2026-10'})
 
     assert resp.status_code == 201

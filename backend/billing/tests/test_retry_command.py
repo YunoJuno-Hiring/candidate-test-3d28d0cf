@@ -9,7 +9,7 @@ from django.core import mail
 from django.core.management import call_command
 
 from billing.models import InvoiceEmail
-from billing.services import MAX_EMAIL_ATTEMPTS, run_billing
+from billing.services import MAX_EMAIL_ATTEMPTS, SEND_ALREADY_SENT, SEND_SKIPPED, run_billing
 from contracts.models import TimesheetEntry
 
 OCTOBER = datetime.date(2026, 10, 1)
@@ -118,9 +118,70 @@ def test_a_bad_row_does_not_abort_the_command(invoice_emails):
 @pytest.mark.django_db
 def test_reports_rows_another_sender_held(invoice_emails):
     # send_invoice_email skips a row another process holds, leaving it pending.
-    with mock.patch('billing.management.commands.retry_invoice_emails.send_invoice_email', return_value=False):
+    with mock.patch('billing.management.commands.retry_invoice_emails.send_invoice_email', return_value=SEND_SKIPPED):
         output = _retry()
 
     assert 'Retrying 2 invoice email(s)' in output
     assert 'Sent: 0' in output
     assert 'Skipped: 2 (being sent by another process' in output
+
+
+@pytest.mark.django_db
+def test_failed_row_held_elsewhere_is_reported_as_skipped_not_failing(invoice_emails):
+    # The review's case: a failed row another process holds is never attempted
+    # here, so it must not be reported as "Still failing".
+    InvoiceEmail.objects.update(status=InvoiceEmail.STATUS_FAILED, attempts=1)
+
+    with mock.patch('billing.management.commands.retry_invoice_emails.send_invoice_email', return_value=SEND_SKIPPED):
+        output = _retry()
+
+    assert 'Skipped: 2' in output
+    assert 'Still failing' not in output
+
+
+@pytest.mark.django_db
+def test_rows_sent_by_another_process_are_not_counted_as_sent_here(invoice_emails):
+    with mock.patch('billing.management.commands.retry_invoice_emails.send_invoice_email', return_value=SEND_ALREADY_SENT):
+        output = _retry()
+
+    assert 'Sent: 0' in output
+    assert 'Already sent by another process: 2' in output
+
+
+@pytest.mark.django_db(transaction=True)
+def test_row_locked_by_another_process_is_really_skipped(invoice_emails):
+    # End to end on Postgres, no mocks: another transaction holds a failed row
+    # (as an overlapping retry run would). The command must skip it without
+    # an attempt and report it as skipped; the other row is sent.
+    import threading
+
+    from django.db import connection, transaction
+
+    InvoiceEmail.objects.update(status=InvoiceEmail.STATUS_FAILED, attempts=1)
+    held, other = invoice_emails
+    holding, release = threading.Event(), threading.Event()
+
+    def hold_lock():
+        try:
+            with transaction.atomic():
+                InvoiceEmail.objects.select_for_update().get(pk=held.pk)
+                holding.set()
+                release.wait(10)
+        finally:
+            connection.close()
+
+    holder = threading.Thread(target=hold_lock)
+    holder.start()
+    try:
+        assert holding.wait(10)
+        output = _retry()
+    finally:
+        release.set()
+        holder.join()
+
+    held.refresh_from_db()
+    other.refresh_from_db()
+    assert (held.status, held.attempts) == (InvoiceEmail.STATUS_FAILED, 1)  # not attempted
+    assert other.status == InvoiceEmail.STATUS_SENT
+    assert 'Sent: 1' in output and 'Skipped: 1' in output
+    assert 'Still failing' not in output

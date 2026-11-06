@@ -173,8 +173,16 @@ def retryable_emails():
     )
 
 
-def send_invoice_email(email_id: int) -> bool:
-    """Try to deliver one outbox row. Returns True if the row is sent.
+# What a single send_invoice_email call did, so callers report what actually
+# happened rather than inferring it from the row's status afterwards.
+SEND_SENT = 'sent'                  # this call delivered it
+SEND_FAILED = 'failed'              # this call tried and failed (recorded on the row)
+SEND_SKIPPED = 'skipped'            # another sender held the row; nothing attempted
+SEND_ALREADY_SENT = 'already_sent'  # someone else had delivered it already
+
+
+def send_invoice_email(email_id: int) -> str:
+    """Try to deliver one outbox row; returns one of the SEND_* outcomes.
 
     The row is locked while sending, and a row another sender holds is
     skipped, so the same email is never sent twice at once. A row already
@@ -190,9 +198,9 @@ def send_invoice_email(email_id: int) -> bool:
             .first()
         )
         if email is None:
-            return False
+            return SEND_SKIPPED
         if email.status == InvoiceEmail.STATUS_SENT:
-            return True
+            return SEND_ALREADY_SENT
 
         invoice = email.invoice
         email.attempts += 1
@@ -216,4 +224,4 @@ def send_invoice_email(email_id: int) -> bool:
             email.sent_at = timezone.now()
             email.last_error = ''
         email.save(update_fields=['status', 'attempts', 'last_error', 'sent_at'])
-    return email.status == InvoiceEmail.STATUS_SENT
+    return SEND_SENT if email.status == InvoiceEmail.STATUS_SENT else SEND_FAILED
