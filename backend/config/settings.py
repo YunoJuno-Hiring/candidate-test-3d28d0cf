@@ -87,10 +87,11 @@ STATIC_URL = '/static/'
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 LANGUAGE_CODE = 'en-us'
-# UK business (GBP): "today" and "this month" for billing and timesheet dates
-# must match the UK calendar, not UTC. With UTC, the Billing page's default
-# month was refused as "future" between 00:00 and 01:00 BST on the 1st.
-# Timestamps are still stored in UTC (USE_TZ = True).
+# UK business (GBP): "today" must follow the UK calendar, not UTC. It decides
+# when a month has ended and can be billed (with UTC, just after midnight BST
+# on the 1st the month that had just ended in the UK still counted as running)
+# and the "no future dates" rule for timesheets. Timestamps are still stored in
+# UTC (USE_TZ = True).
 TIME_ZONE = 'Europe/London'
 USE_I18N = True
 USE_TZ = True
