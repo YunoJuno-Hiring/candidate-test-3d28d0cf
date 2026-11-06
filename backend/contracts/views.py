@@ -1,3 +1,4 @@
+from django.db import transaction
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -130,25 +131,37 @@ class TimesheetListCreateView(APIView):
 class TimesheetDetailView(APIView):
     permission_classes = [IsAuthenticated]
 
+    # Atomic so the entry stays locked from the invoiced check until the save:
+    # a billing run locks entries the same way, so the two can't interleave.
+    @transaction.atomic
     def patch(self, request, pk):
         user = request.user
 
         if hasattr(user, 'company_admin'):
             try:
-                entry = TimesheetEntry.objects.get(
+                entry = TimesheetEntry.objects.select_for_update(of=('self',)).get(
                     pk=pk, contract__company=user.company_admin.company
                 )
             except TimesheetEntry.DoesNotExist:
                 return Response({'detail': 'Not found.'}, status=status.HTTP_404_NOT_FOUND)
         elif hasattr(user, 'freelancer'):
             try:
-                entry = TimesheetEntry.objects.get(
+                entry = TimesheetEntry.objects.select_for_update(of=('self',)).get(
                     pk=pk, contract__freelancer=user.freelancer
                 )
             except TimesheetEntry.DoesNotExist:
                 return Response({'detail': 'Not found.'}, status=status.HTTP_404_NOT_FOUND)
         else:
             return Response({'detail': 'Not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        # Once an entry is on an invoice it can't change, for anyone: otherwise
+        # an issued invoice and its timesheet would disagree (e.g. the company
+        # invoiced for work it later rejected). Corrections would need a credit note.
+        if hasattr(entry, 'invoice_line'):
+            return Response(
+                {'detail': 'This entry has been invoiced and can no longer be changed.'},
+                status=status.HTTP_409_CONFLICT,
+            )
 
         new_status = request.data.get('status')
         rejection_reason = request.data.get('rejection_reason')
