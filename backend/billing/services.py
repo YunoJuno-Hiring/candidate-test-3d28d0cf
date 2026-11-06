@@ -1,7 +1,6 @@
 import calendar
 import datetime
 import re
-import smtplib
 from collections import defaultdict
 from decimal import ROUND_HALF_UP, Decimal
 
@@ -176,16 +175,20 @@ def send_invoice_email(email_id: int) -> bool:
             return True
 
         invoice = email.invoice
-        subject = f'Invoice {invoice.number}: {invoice.company.name}, {invoice.period:%B %Y}'
-        body = render_to_string(
-            'billing/invoice_email.txt', {'invoice': invoice, 'lines': invoice.lines.all()}
-        )
-
         email.attempts += 1
         try:
+            subject = f'Invoice {invoice.number}: {invoice.company.name}, {invoice.period:%B %Y}'
+            body = render_to_string(
+                'billing/invoice_email.txt', {'invoice': invoice, 'lines': invoice.lines.all()}
+            )
             send_mail(subject, body, None, [email.recipient])
-        except (smtplib.SMTPException, OSError) as exc:
-            # OSError covers connection refused and timeouts.
+        except Exception as exc:
+            # Deliberately broad. This runs after the invoice has committed, so
+            # any failure (mail server down, or e.g. BadHeaderError for a company
+            # name containing a newline) must be recorded on this row, not raised:
+            # raising would skip the run's remaining emails, turn a committed run
+            # into a 500, and roll back this attempt so the row never reaches
+            # MAX_EMAIL_ATTEMPTS and blocks the retry command forever.
             email.status = InvoiceEmail.STATUS_FAILED
             email.last_error = f'{type(exc).__name__}: {exc}'
         else:

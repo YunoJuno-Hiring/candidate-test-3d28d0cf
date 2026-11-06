@@ -162,3 +162,43 @@ def test_billing_run_reports_failed_emails(admin_client, billable):
     assert resp.status_code == 201
     assert resp.data['invoices_generated'] == 1
     assert (resp.data['emails_failed'], resp.data['status']) == (2, 'completed_with_errors')
+
+
+# --- any send error is recorded, never raised ---
+
+@pytest.mark.django_db
+def test_unexpected_send_error_is_recorded_not_raised(northstar, admin_user, billable, django_capture_on_commit_callbacks):
+    # A newline in the company name makes Django raise BadHeaderError (a
+    # ValueError, not an SMTP error) when building the subject.
+    northstar.name = 'NorthStar\nConsulting'
+    northstar.save()
+
+    with django_capture_on_commit_callbacks(execute=True):
+        run = run_billing(northstar, OCTOBER, admin_user)
+
+    assert run.invoices_generated == 1
+    for email in InvoiceEmail.objects.all():
+        assert (email.status, email.attempts) == (InvoiceEmail.STATUS_FAILED, 1)
+        assert email.last_error.startswith('BadHeaderError')
+
+
+@pytest.mark.django_db
+def test_one_bad_email_does_not_stop_the_others(northstar, admin_user, billable, django_capture_on_commit_callbacks):
+    with mock.patch('billing.services.send_mail', side_effect=[ValueError('boom'), 1]):
+        with django_capture_on_commit_callbacks(execute=True):
+            run_billing(northstar, OCTOBER, admin_user)
+
+    first, second = InvoiceEmail.objects.order_by('id')
+    assert (first.status, first.last_error) == (InvoiceEmail.STATUS_FAILED, 'ValueError: boom')
+    assert second.status == InvoiceEmail.STATUS_SENT
+
+
+@pytest.mark.django_db(transaction=True)
+def test_billing_run_with_unexpected_send_error_still_returns_201(admin_client, northstar, billable):
+    northstar.name = 'NorthStar\nConsulting'
+    northstar.save()
+
+    resp = admin_client.post('/api/billing/runs/', {'month': '2026-10'})
+
+    assert resp.status_code == 201
+    assert (resp.data['invoices_generated'], resp.data['emails_failed']) == (1, 2)

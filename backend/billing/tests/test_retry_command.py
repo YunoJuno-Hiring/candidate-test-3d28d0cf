@@ -100,3 +100,16 @@ def test_reports_emails_reaching_the_limit(invoice_emails):
 
     assert all(e.attempts == MAX_EMAIL_ATTEMPTS for e in InvoiceEmail.objects.all())
     assert f'Still failing: 2 (2 reached the {MAX_EMAIL_ATTEMPTS}-attempt limit)' in output
+
+
+@pytest.mark.django_db
+def test_a_bad_row_does_not_abort_the_command(invoice_emails):
+    # Previously an unexpected error escaped, aborted the command and rolled
+    # back the attempt, so the row never reached the limit.
+    with mock.patch('billing.services.send_mail', side_effect=[ValueError('bad header'), 1]):
+        output = _retry()
+
+    bad, good = InvoiceEmail.objects.order_by('id')
+    assert (bad.status, bad.attempts, bad.last_error) == (InvoiceEmail.STATUS_FAILED, 1, 'ValueError: bad header')
+    assert good.status == InvoiceEmail.STATUS_SENT
+    assert 'Sent: 1' in output and 'Still failing: 1' in output
