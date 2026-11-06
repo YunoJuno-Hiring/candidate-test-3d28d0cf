@@ -27,12 +27,13 @@ def line_amount(daily_rate: Decimal, hours: Decimal) -> Decimal:
     return (daily_rate * hours / HOURS_PER_DAY).quantize(PENNY, rounding=ROUND_HALF_UP)
 
 
-def parse_period(value: str, allow_future: bool = False) -> datetime.date:
+def parse_period(value: str, only_ended: bool = True) -> datetime.date:
     """Parse a 'YYYY-MM' billing month into its first day.
 
-    Raises ValueError for a malformed value or, unless allow_future, a month in
-    the future. The current month is allowed: entries approved later in it roll
-    into the next month's invoice.
+    Raises ValueError for a malformed value or, when only_ended, a month that
+    hasn't ended yet. There is one invoice per freelancer per month, so billing
+    a month that is still running would issue a partial invoice that can never
+    be completed; the rest of its work would land on the next month's invoice.
     """
     # strptime alone also accepts e.g. '2026-1', so check the exact shape first.
     if not isinstance(value, str) or not re.fullmatch(r'[12]\d{3}-\d{2}', value):
@@ -41,8 +42,8 @@ def parse_period(value: str, allow_future: bool = False) -> datetime.date:
         period = datetime.datetime.strptime(value, '%Y-%m').date()
     except ValueError:
         raise ValueError('Month must be in YYYY-MM format.')
-    if not allow_future and period > timezone.localdate().replace(day=1):
-        raise ValueError('Cannot bill a future month.')
+    if only_ended and period >= timezone.localdate().replace(day=1):
+        raise ValueError('Can only bill a month that has ended.')
     return period
 
 

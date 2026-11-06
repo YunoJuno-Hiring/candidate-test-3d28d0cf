@@ -89,6 +89,15 @@ def test_billing_run_rejects_invalid_month(admin_client, body):
 
 
 @pytest.mark.django_db
+def test_billing_run_rejects_the_current_month(admin_client):
+    resp = admin_client.post('/api/billing/runs/', {'month': timezone.localdate().strftime('%Y-%m')})
+
+    assert resp.status_code == 400
+    assert resp.data == {'month': 'Can only bill a month that has ended.'}
+    assert not BillingRun.objects.exists()
+
+
+@pytest.mark.django_db
 def test_billing_run_rejects_future_month(admin_client):
     resp = admin_client.post('/api/billing/runs/', {'month': _next_month()})
 

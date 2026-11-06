@@ -51,9 +51,20 @@ def test_parse_period_rejects_malformed_values(value):
         parse_period(value)
 
 
-def test_parse_period_allows_current_month():
-    today = timezone.localdate()
-    assert parse_period(f'{today:%Y-%m}') == today.replace(day=1)
+def test_parse_period_allows_a_month_that_has_ended():
+    last_month = (timezone.localdate().replace(day=1) - datetime.timedelta(days=1)).replace(day=1)
+    assert parse_period(f'{last_month:%Y-%m}') == last_month
+
+
+def test_parse_period_rejects_the_current_month():
+    # One invoice per freelancer per month: billing a month that is still
+    # running would issue a partial invoice that can never be completed.
+    with pytest.raises(ValueError, match='has ended'):
+        parse_period(f'{timezone.localdate():%Y-%m}')
+
+
+def test_parse_period_can_accept_any_month_for_filtering():
+    assert parse_period(f'{timezone.localdate():%Y-%m}', only_ended=False) == timezone.localdate().replace(day=1)
 
 
 def test_parse_period_rejects_future_month():

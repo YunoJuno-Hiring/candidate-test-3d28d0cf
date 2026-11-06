@@ -69,7 +69,7 @@ class InvoiceListView(APIView):
         month_param = request.query_params.get('month')
         if month_param:
             try:
-                period = parse_period(month_param, allow_future=True)
+                period = parse_period(month_param, only_ended=False)
             except ValueError as exc:
                 return Response({'month': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
             qs = qs.filter(period=period)

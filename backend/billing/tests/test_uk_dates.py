@@ -15,14 +15,15 @@ def uk_midnight():
         yield
 
 
-def test_new_uk_month_can_be_billed_just_after_midnight(uk_midnight):
-    # The Billing page's default month comes from the browser's (UK) clock.
-    assert parse_period('2026-06') == datetime.date(2026, 6, 1)
+def test_month_that_just_ended_in_the_uk_can_be_billed(uk_midnight):
+    # In the UK May has ended; in UTC it is still 31 May, so May would be
+    # refused as a month that hasn't ended.
+    assert parse_period('2026-05') == datetime.date(2026, 5, 1)
 
 
-def test_next_uk_month_is_still_future(uk_midnight):
+def test_new_uk_month_has_not_ended_yet(uk_midnight):
     with pytest.raises(ValueError):
-        parse_period('2026-07')
+        parse_period('2026-06')
 
 
 @pytest.mark.django_db
