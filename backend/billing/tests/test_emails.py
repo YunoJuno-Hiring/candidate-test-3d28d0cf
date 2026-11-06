@@ -33,8 +33,9 @@ def test_emails_are_sent_only_after_commit(northstar, admin_user, billable, djan
     with django_capture_on_commit_callbacks(execute=False) as callbacks:
         run_billing(northstar, OCTOBER, admin_user)
 
-    # Inside the transaction nothing has been sent; sending is deferred to commit.
-    assert len(callbacks) == 1
+    # Inside the transaction nothing has been sent; sending is deferred to
+    # commit, one callback per email (company and freelancer).
+    assert len(callbacks) == 2
     assert mail.outbox == []
     assert all(e.status == InvoiceEmail.STATUS_PENDING for e in InvoiceEmail.objects.all())
 
@@ -202,3 +203,17 @@ def test_billing_run_with_unexpected_send_error_still_returns_201(admin_client, 
 
     assert resp.status_code == 201
     assert (resp.data['invoices_generated'], resp.data['emails_failed']) == (1, 2)
+
+
+@pytest.mark.django_db(transaction=True)
+def test_an_error_escaping_one_send_does_not_stop_the_others_or_fail_the_run(admin_client, billable):
+    # E.g. the database drops while one send is being recorded: the other
+    # email is still sent, and the committed run still returns 201.
+    from django.db import DatabaseError
+
+    with mock.patch('billing.services.send_invoice_email', side_effect=[DatabaseError('connection lost'), True]) as send:
+        resp = admin_client.post('/api/billing/runs/', {'month': '2026-10'})
+
+    assert resp.status_code == 201
+    assert resp.data['invoices_generated'] == 1
+    assert send.call_count == 2

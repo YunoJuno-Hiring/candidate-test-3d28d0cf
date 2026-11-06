@@ -102,8 +102,22 @@ def run_billing(company: Company, period: datetime.date, run_by) -> BillingRun:
         # Send only once the invoices are committed: an email must never go
         # out for an invoice that was rolled back, and a failed send must never
         # roll back an invoice. Failures stay on their outbox rows for retry.
-        transaction.on_commit(lambda: [send_invoice_email(email_id) for email_id in email_ids])
+        # One robust callback per email: if anything escapes one send (e.g. the
+        # database drops while recording it), Django logs it and still runs the
+        # rest, and the committed run isn't turned into a 500. That row stays
+        # pending for the retry command.
+        for email_id in email_ids:
+            transaction.on_commit(_after_commit_sender(email_id), robust=True)
     return run
+
+
+def _after_commit_sender(email_id):
+    # A real function rather than functools.partial: when a robust on_commit
+    # callback fails, Django logs it by __qualname__, which partial lacks, so
+    # the logging itself would raise and defeat robust=True.
+    def send_after_commit():
+        send_invoice_email(email_id)
+    return send_after_commit
 
 
 def _create_invoice(run, company, freelancer, period, entries) -> list[int]:
