@@ -309,3 +309,59 @@ def test_simultaneous_requests_cannot_exceed_the_daily_total(freelancer_user, co
     assert errors == []
     assert sorted(statuses) == [201, 400]
     assert TimesheetEntry.objects.count() == 1
+
+
+@pytest.fixture
+def freelancer_row_held(freelancer_user):
+    # Another transaction holds the freelancer lock (e.g. the freelancer is
+    # logging hours right now). lock_timeout turns "would wait" into an error.
+    import threading
+
+    from django.db import connection, transaction
+
+    from accounts.models import Freelancer
+
+    holding, release = threading.Event(), threading.Event()
+
+    def hold_lock():
+        try:
+            with transaction.atomic():
+                Freelancer.objects.select_for_update().get(pk=freelancer_user.freelancer.pk)
+                holding.set()
+                release.wait(10)
+        finally:
+            connection.close()
+
+    holder = threading.Thread(target=hold_lock)
+    holder.start()
+    assert holding.wait(10)
+    with connection.cursor() as cursor:
+        cursor.execute("SET lock_timeout = '500ms'")
+    yield
+    release.set()
+    holder.join()
+    with connection.cursor() as cursor:
+        cursor.execute('RESET lock_timeout')
+
+
+@pytest.mark.django_db(transaction=True)
+def test_approving_submitted_work_does_not_wait_on_the_freelancer(admin_client, contract, freelancer_row_held):
+    entry = TimesheetEntry.objects.create(contract=contract, date=YESTERDAY, hours=Decimal('8'), status='submitted')
+
+    resp = admin_client.patch(f'/api/timesheets/{entry.id}/', {'status': 'approved'})
+
+    assert resp.status_code == 200
+
+
+@pytest.mark.django_db(transaction=True)
+def test_approving_rejected_work_still_takes_the_freelancer_lock(admin_client, contract, freelancer_row_held):
+    # It re-checks the daily total, so it must wait for the freelancer's own
+    # write to finish (here: hits the lock timeout instead of passing).
+    from django.db import OperationalError
+
+    entry = TimesheetEntry.objects.create(
+        contract=contract, date=YESTERDAY, hours=Decimal('8'), status='rejected', rejection_reason='x'
+    )
+
+    with pytest.raises(OperationalError, match='lock timeout'):
+        admin_client.patch(f'/api/timesheets/{entry.id}/', {'status': 'approved'})

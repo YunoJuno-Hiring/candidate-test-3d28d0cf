@@ -239,9 +239,13 @@ class TimesheetDetailView(APIView):
                     {'rejection_reason': 'This field is required when rejecting an entry.'},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
-            # Approving rejected work can re-check the freelancer's daily total,
-            # so it takes the same lock as the freelancer's own writes.
-            _lock_freelancer(entry.contract.freelancer)
+            # Approving rejected work is the only admin decision that adds hours
+            # back to the freelancer's daily total (the serializer re-checks it),
+            # so only then does it take the same lock as the freelancer's own
+            # writes. Other decisions leave the total unchanged or lower it, and
+            # don't need to wait on the freelancer.
+            if entry.status == TimesheetEntry.STATUS_REJECTED and new_status == TimesheetEntry.STATUS_APPROVED:
+                _lock_freelancer(entry.contract.freelancer)
             # An approved entry never keeps a reason from an earlier rejection.
             data = {
                 'status': new_status,
