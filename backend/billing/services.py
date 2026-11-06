@@ -68,6 +68,14 @@ def run_billing(company: Company, period: datetime.date, run_by) -> BillingRun:
 
         run = BillingRun.objects.create(company=company, period=period, run_by=run_by)
 
+        # Freelancers who already have an invoice for this period are skipped:
+        # their entries approved since then roll into the next period's invoice.
+        # Excluded in the query itself, so a re-run doesn't fetch, or lock,
+        # entries it won't bill (that would block approvals on them for nothing).
+        already_invoiced = set(
+            Invoice.objects.filter(company=company, period=period).values_list('freelancer_id', flat=True)
+        )
+
         # Lock the entries being billed so they can't be rejected or edited
         # half-way through the run.
         entries = (
@@ -78,6 +86,7 @@ def run_billing(company: Company, period: datetime.date, run_by) -> BillingRun:
                 date__lte=period_end(period),
                 invoice_line__isnull=True,
             )
+            .exclude(contract__freelancer_id__in=already_invoiced)
             .select_related('contract__freelancer__user')
             .order_by('date', 'id')
         )
@@ -86,16 +95,8 @@ def run_billing(company: Company, period: datetime.date, run_by) -> BillingRun:
         for entry in entries:
             by_freelancer[entry.contract.freelancer].append(entry)
 
-        already_invoiced = set(
-            Invoice.objects.filter(company=company, period=period).values_list('freelancer_id', flat=True)
-        )
-
         email_ids = []
         for freelancer, freelancer_entries in by_freelancer.items():
-            # Entries approved after this period was invoiced roll into the
-            # next period's invoice.
-            if freelancer.id in already_invoiced:
-                continue
             email_ids.extend(_create_invoice(run, company, freelancer, period, freelancer_entries))
             run.invoices_generated += 1
 

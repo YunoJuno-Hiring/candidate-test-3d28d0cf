@@ -350,3 +350,44 @@ def test_run_uses_the_company_as_read_under_its_lock(northstar, admin_user, acti
 
     assert InvoiceEmail.objects.filter(recipient='new-billing@northstar.test').exists()
     assert not InvoiceEmail.objects.filter(recipient='billing@northstar.test').exists()
+
+
+@pytest.mark.django_db(transaction=True)
+def test_rerun_does_not_lock_entries_it_will_not_bill(northstar, admin_user, active_contract):
+    # After October is billed, a late-approved October entry belongs to next
+    # month. Re-running October must not lock it: here another transaction
+    # (e.g. an admin approving it) holds that row, and the re-run must finish
+    # instead of waiting. lock_timeout turns "would wait" into an error.
+    import threading
+
+    from django.db import connection
+
+    _entry(active_contract, datetime.date(2026, 10, 1))
+    run_billing(northstar, OCTOBER, admin_user)
+    late = _entry(active_contract, datetime.date(2026, 10, 20))
+
+    holding, release = threading.Event(), threading.Event()
+
+    def hold_lock():
+        try:
+            with transaction.atomic():
+                TimesheetEntry.objects.select_for_update().get(pk=late.pk)
+                holding.set()
+                release.wait(10)
+        finally:
+            connection.close()
+
+    holder = threading.Thread(target=hold_lock)
+    holder.start()
+    try:
+        assert holding.wait(10)
+        with connection.cursor() as cursor:
+            cursor.execute("SET lock_timeout = '500ms'")
+        rerun = run_billing(northstar, OCTOBER, admin_user)
+    finally:
+        release.set()
+        holder.join()
+        with connection.cursor() as cursor:
+            cursor.execute('RESET lock_timeout')
+
+    assert rerun.invoices_generated == 0
