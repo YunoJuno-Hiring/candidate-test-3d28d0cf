@@ -69,16 +69,91 @@ def test_freelancer_can_correct_undecided_entry(freelancer_client, active_contra
 
 
 @pytest.mark.django_db
-@pytest.mark.parametrize('entry_status', ['approved', 'rejected'])
-def test_freelancer_cannot_edit_decided_entry(freelancer_client, active_contract, entry_status):
+@pytest.mark.parametrize('body', [{'hours': '12.0'}, {'status': 'submitted'}])
+def test_freelancer_cannot_edit_approved_entry(freelancer_client, active_contract, body):
     # Otherwise approved hours could be changed after the admin signed them off.
-    entry = _entry(active_contract, entry_status, rejection_reason='x' if entry_status == 'rejected' else None)
+    entry = _entry(active_contract, 'approved')
 
-    resp = freelancer_client.patch(f'/api/timesheets/{entry.id}/', {'hours': '12.0'})
+    resp = freelancer_client.patch(f'/api/timesheets/{entry.id}/', body)
 
     assert resp.status_code == 409
     entry.refresh_from_db()
-    assert entry.hours == Decimal('8.00')
+    assert (entry.hours, entry.status) == (Decimal('8.00'), 'approved')
+
+
+# --- moving work forward: drafts and rejected entries ---
+
+@pytest.mark.django_db
+def test_freelancer_can_submit_a_draft(freelancer_client, active_contract):
+    entry = _entry(active_contract, 'draft')
+
+    resp = freelancer_client.patch(f'/api/timesheets/{entry.id}/', {'status': 'submitted'})
+
+    assert resp.status_code == 200
+    entry.refresh_from_db()
+    assert entry.status == 'submitted'
+
+
+@pytest.mark.django_db
+def test_editing_a_draft_keeps_it_a_draft(freelancer_client, active_contract):
+    entry = _entry(active_contract, 'draft')
+
+    freelancer_client.patch(f'/api/timesheets/{entry.id}/', {'hours': '7.5'})
+
+    entry.refresh_from_db()
+    assert (entry.hours, entry.status) == (Decimal('7.50'), 'draft')
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize('new_status', ['draft', 'approved', 'rejected'])
+def test_freelancer_can_only_set_status_to_submitted(freelancer_client, active_contract, new_status):
+    entry = _entry(active_contract, 'draft')
+
+    resp = freelancer_client.patch(f'/api/timesheets/{entry.id}/', {'status': new_status})
+
+    assert resp.status_code == 403
+    entry.refresh_from_db()
+    assert entry.status == 'draft'
+
+
+@pytest.mark.django_db
+def test_correcting_rejected_work_resubmits_it(freelancer_client, active_contract):
+    entry = _entry(active_contract, 'rejected', rejection_reason='Should be 7.5h.')
+
+    resp = freelancer_client.patch(f'/api/timesheets/{entry.id}/', {'hours': '7.5'})
+
+    assert resp.status_code == 200
+    entry.refresh_from_db()
+    assert (entry.hours, entry.status, entry.rejection_reason) == (Decimal('7.50'), 'submitted', None)
+
+
+@pytest.mark.django_db
+def test_rejected_work_can_be_resubmitted_unchanged(freelancer_client, active_contract):
+    entry = _entry(active_contract, 'rejected', rejection_reason='Missing description.')
+
+    resp = freelancer_client.patch(f'/api/timesheets/{entry.id}/', {'status': 'submitted'})
+
+    assert resp.status_code == 200
+    entry.refresh_from_db()
+    assert (entry.status, entry.rejection_reason) == ('submitted', None)
+
+
+@pytest.mark.django_db
+def test_corrected_work_is_billed_once_approved(freelancer_client, northstar, admin_user, active_contract):
+    # End to end: rejected 10h -> corrected to 8h -> approved -> billed at 8h.
+    from billing.models import InvoiceLine
+
+    entry = _entry(active_contract, 'rejected', rejection_reason='Should be 8h.')
+    entry.hours = Decimal('10.0')
+    entry.save()
+    freelancer_client.patch(f'/api/timesheets/{entry.id}/', {'hours': '8.0'})
+    entry.refresh_from_db()
+    entry.status = 'approved'  # the admin's approval (admin_client shares the same APIClient)
+    entry.save()
+
+    run_billing(northstar, datetime.date(2026, 10, 1), admin_user)
+
+    assert InvoiceLine.objects.get(timesheet_entry=entry).hours == Decimal('8.00')
 
 
 # --- nobody can move an entry to another contract ---

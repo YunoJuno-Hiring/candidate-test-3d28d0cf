@@ -16,7 +16,7 @@ from .serializers import (
 # Fields each kind of timesheet request may send; anything else is refused.
 CREATE_FIELDS = {'contract', 'date', 'hours'}
 ADMIN_EDITABLE_FIELDS = {'status', 'rejection_reason'}
-FREELANCER_EDITABLE_FIELDS = {'hours', 'date'}
+FREELANCER_EDITABLE_FIELDS = {'hours', 'date', 'status'}  # status: only to 'submitted'
 
 
 def _lock_freelancer(freelancer):
@@ -194,7 +194,12 @@ class TimesheetDetailView(APIView):
         is_admin = hasattr(user, 'company_admin')
         fields = set(request.data.keys())
 
-        if not is_admin and fields & ADMIN_EDITABLE_FIELDS:
+        # A freelancer's only status change is submitting their own work;
+        # approving and rejecting belong to the company admin.
+        if not is_admin and (
+            'rejection_reason' in fields
+            or ('status' in fields and request.data.get('status') != TimesheetEntry.STATUS_SUBMITTED)
+        ):
             return Response(
                 {'detail': 'Only company admins can approve or reject entries.'},
                 status=status.HTTP_403_FORBIDDEN,
@@ -231,13 +236,20 @@ class TimesheetDetailView(APIView):
                 'rejection_reason': rejection_reason if new_status == TimesheetEntry.STATUS_REJECTED else None,
             }
         else:
-            if entry.status not in (TimesheetEntry.STATUS_DRAFT, TimesheetEntry.STATUS_SUBMITTED):
+            # Approved hours are signed off; drafts, submitted and rejected
+            # entries can still be corrected and (re)submitted.
+            if entry.status == TimesheetEntry.STATUS_APPROVED:
                 return Response(
-                    {'detail': 'Only draft or submitted entries can be edited.'},
+                    {'detail': 'Approved entries can no longer be edited.'},
                     status=status.HTTP_409_CONFLICT,
                 )
             _lock_freelancer(user.freelancer)
-            data = request.data
+            data = {field: request.data.get(field) for field in fields}
+            # Correcting rejected work sends it back for review, without the
+            # old reason, so it can't be billed until an admin approves it.
+            if entry.status == TimesheetEntry.STATUS_REJECTED and fields:
+                data['status'] = TimesheetEntry.STATUS_SUBMITTED
+                data['rejection_reason'] = None
 
         serializer = TimesheetEntrySerializer(entry, data=data, partial=True)
         serializer.is_valid(raise_exception=True)
