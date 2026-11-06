@@ -233,3 +233,20 @@ def test_freelancer_cannot_see_another_freelancers_invoice(api_client, october_i
 def test_invoice_detail_not_found(admin_client):
     resp = admin_client.get('/api/invoices/99999/')
     assert resp.status_code == 404
+
+
+@pytest.mark.django_db
+def test_invoice_with_no_recipients_says_so(admin_client, northstar, admin_user, active_contract, freelancer_user):
+    # Blank addresses are allowed by the database; no email can be sent, and
+    # the invoice must not look like it is just waiting to go out.
+    northstar.billing_email = ''
+    northstar.save()
+    freelancer_user.email = ''
+    freelancer_user.save()
+    _entry(active_contract, datetime.date(2026, 10, 1))
+    run_billing(northstar, OCTOBER, admin_user)
+    invoice = Invoice.objects.get()
+
+    assert not invoice.emails.exists()
+    assert admin_client.get('/api/invoices/?month=2026-10').data[0]['delivery_status'] == 'no_recipients'
+    assert admin_client.get(f'/api/invoices/{invoice.id}/').data['delivery_status'] == 'no_recipients'

@@ -37,9 +37,13 @@ class InvoiceSerializer(serializers.ModelSerializer):
 
     def get_delivery_status(self, obj):
         # 'sent' once every recipient has it, 'failed' if any recipient needs a
-        # retry, otherwise 'pending'.
+        # retry, otherwise 'pending'. 'no_recipients' when neither the company
+        # nor the freelancer had an email address: nothing will ever be sent, so
+        # 'pending' would hide that the invoice was never delivered.
         statuses = {email.status for email in obj.emails.all()}
-        if statuses and statuses == {InvoiceEmail.STATUS_SENT}:
+        if not statuses:
+            return 'no_recipients'
+        if statuses == {InvoiceEmail.STATUS_SENT}:
             return InvoiceEmail.STATUS_SENT
         if InvoiceEmail.STATUS_FAILED in statuses:
             return InvoiceEmail.STATUS_FAILED
