@@ -45,7 +45,7 @@ def test_parse_period_returns_first_of_month():
     assert parse_period('2026-10') == OCTOBER
 
 
-@pytest.mark.parametrize('value', ['', '2026-13', '2026/10', 'October', '2026-10-01', None])
+@pytest.mark.parametrize('value', ['', '2026-13', '2026/10', 'October', '2026-10-01', '2026-1', '0999-10', None])
 def test_parse_period_rejects_malformed_values(value):
     with pytest.raises(ValueError):
         parse_period(value)

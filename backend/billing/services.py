@@ -1,5 +1,6 @@
 import calendar
 import datetime
+import re
 import smtplib
 from collections import defaultdict
 from decimal import ROUND_HALF_UP, Decimal
@@ -34,9 +35,12 @@ def parse_period(value: str, allow_future: bool = False) -> datetime.date:
     the future. The current month is allowed: entries approved later in it roll
     into the next month's invoice.
     """
+    # strptime alone also accepts e.g. '2026-1', so check the exact shape first.
+    if not isinstance(value, str) or not re.fullmatch(r'[12]\d{3}-\d{2}', value):
+        raise ValueError('Month must be in YYYY-MM format.')
     try:
         period = datetime.datetime.strptime(value, '%Y-%m').date()
-    except (TypeError, ValueError):
+    except ValueError:
         raise ValueError('Month must be in YYYY-MM format.')
     if not allow_future and period > timezone.localdate().replace(day=1):
         raise ValueError('Cannot bill a future month.')
