@@ -1,3 +1,4 @@
+from django.db.models import Count, Q
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -42,9 +43,11 @@ class BillingRunView(APIView):
         # retried outside the request. "completed" only when every email of
         # this run went out: a row can also still be pending, e.g. skipped
         # because the retry command was sending it at the same moment.
-        run_emails = InvoiceEmail.objects.filter(invoice__run=run)
-        emails_failed = run_emails.filter(status=InvoiceEmail.STATUS_FAILED).count()
-        emails_pending = run_emails.filter(status=InvoiceEmail.STATUS_PENDING).count()
+        counts = InvoiceEmail.objects.filter(invoice__run=run).aggregate(
+            failed=Count('id', filter=Q(status=InvoiceEmail.STATUS_FAILED)),
+            pending=Count('id', filter=Q(status=InvoiceEmail.STATUS_PENDING)),
+        )
+        emails_failed, emails_pending = counts['failed'], counts['pending']
         return Response(
             {
                 'run_id': run.id,

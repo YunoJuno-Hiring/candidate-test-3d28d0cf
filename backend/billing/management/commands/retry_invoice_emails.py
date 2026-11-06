@@ -15,6 +15,7 @@ while it is sent. In production it would run on a schedule (e.g. cron every
 few minutes).
 """
 from django.core.management.base import BaseCommand
+from django.db.models import Count, Q
 
 from billing.models import InvoiceEmail
 from billing.services import MAX_EMAIL_ATTEMPTS, retryable_emails, send_invoice_email
@@ -41,19 +42,22 @@ class Command(BaseCommand):
         for email_id in email_ids:
             send_invoice_email(email_id)
 
-        retried = InvoiceEmail.objects.filter(id__in=email_ids)
-        sent = retried.filter(status=InvoiceEmail.STATUS_SENT).count()
-        failed = retried.filter(status=InvoiceEmail.STATUS_FAILED)
-        given_up = failed.filter(attempts__gte=MAX_EMAIL_ATTEMPTS).count()
+        # One query for the whole summary.
+        counts = InvoiceEmail.objects.filter(id__in=email_ids).aggregate(
+            sent=Count('id', filter=Q(status=InvoiceEmail.STATUS_SENT)),
+            failed=Count('id', filter=Q(status=InvoiceEmail.STATUS_FAILED)),
+            given_up=Count('id', filter=Q(status=InvoiceEmail.STATUS_FAILED, attempts__gte=MAX_EMAIL_ATTEMPTS)),
+            # Every attempt records sent or failed, so a row still pending was
+            # skipped: another sender (a billing run, or an overlapping run of
+            # this command) held it.
+            skipped=Count('id', filter=Q(status=InvoiceEmail.STATUS_PENDING)),
+        )
 
-        self.stdout.write(self.style.SUCCESS(f'Sent: {sent}'))
-        if failed.exists():
+        self.stdout.write(self.style.SUCCESS(f'Sent: {counts["sent"]}'))
+        if counts['failed']:
             self.stdout.write(self.style.WARNING(
-                f'Still failing: {failed.count()} ({given_up} reached the {MAX_EMAIL_ATTEMPTS}-attempt limit)'
+                f'Still failing: {counts["failed"]} ({counts["given_up"]} reached the {MAX_EMAIL_ATTEMPTS}-attempt limit)'
             ))
-        # Every attempt records sent or failed, so a row still pending was
-        # skipped: another sender (a billing run, or an overlapping run of this
-        # command) held it. Report it so every row in "Retrying N" is accounted for.
-        skipped = retried.filter(status=InvoiceEmail.STATUS_PENDING).count()
-        if skipped:
-            self.stdout.write(f'Skipped: {skipped} (being sent by another process; picked up next run if needed)')
+        # Reported so every row in "Retrying N" is accounted for.
+        if counts['skipped']:
+            self.stdout.write(f'Skipped: {counts["skipped"]} (being sent by another process; picked up next run if needed)')
