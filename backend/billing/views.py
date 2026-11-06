@@ -3,6 +3,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from core.api import object_body_error
 from .models import Invoice, InvoiceEmail
 from .serializers import InvoiceDetailSerializer, InvoiceSerializer
 from .services import parse_period, run_billing
@@ -28,6 +29,9 @@ class BillingRunView(APIView):
                 {'detail': 'Only company admins can run billing.'},
                 status=status.HTTP_403_FORBIDDEN,
             )
+        error = object_body_error(request)
+        if error:
+            return error
         try:
             period = parse_period(request.data.get('month'))
         except ValueError as exc:

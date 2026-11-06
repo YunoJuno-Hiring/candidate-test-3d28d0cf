@@ -5,6 +5,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from accounts.models import Freelancer
+from core.api import object_body_error
 from .models import Contract, TimesheetEntry
 from .serializers import (
     ContractCreateSerializer,
@@ -130,6 +131,10 @@ class TimesheetListCreateView(APIView):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
+        error = object_body_error(request)
+        if error:
+            return error
+
         disallowed = set(request.data.keys()) - CREATE_FIELDS
         if disallowed:
             return Response(
@@ -159,6 +164,10 @@ class TimesheetDetailView(APIView):
     # a billing run locks entries the same way, so the two can't interleave.
     @transaction.atomic
     def patch(self, request, pk):
+        error = object_body_error(request)
+        if error:
+            return error
+
         user = request.user
 
         if hasattr(user, 'company_admin'):
