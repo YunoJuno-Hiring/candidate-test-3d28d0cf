@@ -63,14 +63,16 @@ class TimesheetEntrySerializer(serializers.ModelSerializer):
         # re-validated, so submitted work on a since-closed contract can still
         # be decided.
         writes_work = bool(attrs.keys() & {'contract', 'date', 'hours'})
-        # Resubmitting rejected work makes its hours count again, so the daily
-        # total must be re-checked even when nothing else changes.
-        resubmits = bool(
+        # Rejected hours don't count towards the daily total, so anything that
+        # takes an entry out of rejected (the freelancer resubmitting it, or the
+        # admin approving it) makes its hours count again and must re-check the
+        # total, even when nothing else changes.
+        leaves_rejected = bool(
             instance
             and instance.status == TimesheetEntry.STATUS_REJECTED
-            and attrs.get('status') == TimesheetEntry.STATUS_SUBMITTED
+            and attrs.get('status') in (TimesheetEntry.STATUS_SUBMITTED, TimesheetEntry.STATUS_APPROVED)
         )
-        if not (writes_work or resubmits):
+        if not (writes_work or leaves_rejected):
             return attrs
 
         contract = attrs.get('contract', instance.contract if instance else None)

@@ -113,6 +113,29 @@ def test_resubmitting_rejected_work_rechecks_the_daily_total(freelancer_client, 
     assert rejected_16h.status == 'rejected'
 
 
+
+@pytest.mark.django_db
+def test_approving_rejected_work_rechecks_the_daily_total(admin_client, rejected_16h, second_contract):
+    # Rejected 16h, then 16h logged elsewhere the same day: approving the
+    # rejected entry would put 32h on one day's invoices.
+    TimesheetEntry.objects.create(contract=second_contract, date=YESTERDAY, hours=Decimal('16'), status='submitted')
+
+    resp = admin_client.patch(f'/api/timesheets/{rejected_16h.id}/', {'status': 'approved'})
+
+    assert resp.status_code == 400
+    assert 'hours' in resp.data
+    rejected_16h.refresh_from_db()
+    assert rejected_16h.status == 'rejected'
+
+
+@pytest.mark.django_db
+def test_approving_rejected_work_that_fits_the_day_is_accepted(admin_client, rejected_16h, second_contract):
+    TimesheetEntry.objects.create(contract=second_contract, date=YESTERDAY, hours=Decimal('8'), status='submitted')
+
+    resp = admin_client.patch(f'/api/timesheets/{rejected_16h.id}/', {'status': 'approved'})
+
+    assert resp.status_code == 200
+
 @pytest.mark.django_db
 def test_correcting_rejected_work_to_fit_the_day_is_accepted(freelancer_client, rejected_16h, second_contract):
     _log(freelancer_client, second_contract, hours='16')
