@@ -51,3 +51,9 @@ class Command(BaseCommand):
             self.stdout.write(self.style.WARNING(
                 f'Still failing: {failed.count()} ({given_up} reached the {MAX_EMAIL_ATTEMPTS}-attempt limit)'
             ))
+        # Every attempt records sent or failed, so a row still pending was
+        # skipped: another sender (a billing run, or an overlapping run of this
+        # command) held it. Report it so every row in "Retrying N" is accounted for.
+        skipped = retried.filter(status=InvoiceEmail.STATUS_PENDING).count()
+        if skipped:
+            self.stdout.write(f'Skipped: {skipped} (being sent by another process; picked up next run if needed)')

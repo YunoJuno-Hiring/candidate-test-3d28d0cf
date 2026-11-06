@@ -113,3 +113,14 @@ def test_a_bad_row_does_not_abort_the_command(invoice_emails):
     assert (bad.status, bad.attempts, bad.last_error) == (InvoiceEmail.STATUS_FAILED, 1, 'ValueError: bad header')
     assert good.status == InvoiceEmail.STATUS_SENT
     assert 'Sent: 1' in output and 'Still failing: 1' in output
+
+
+@pytest.mark.django_db
+def test_reports_rows_another_sender_held(invoice_emails):
+    # send_invoice_email skips a row another process holds, leaving it pending.
+    with mock.patch('billing.management.commands.retry_invoice_emails.send_invoice_email', return_value=False):
+        output = _retry()
+
+    assert 'Retrying 2 invoice email(s)' in output
+    assert 'Sent: 0' in output
+    assert 'Skipped: 2 (being sent by another process' in output
