@@ -334,3 +334,19 @@ def test_run_does_not_query_back_the_email_rows_it_created(northstar, admin_user
 
     email_queries = [q['sql'] for q in ctx.captured_queries if 'billing_invoiceemail' in q['sql']]
     assert email_queries and all(sql.lstrip().upper().startswith('INSERT') for sql in email_queries)
+
+
+@pytest.mark.django_db
+def test_run_uses_the_company_as_read_under_its_lock(northstar, admin_user, active_contract):
+    # The caller's instance is stale: billing_email changed after it was loaded
+    # (e.g. while the run waited on the company lock). Invoices must go to the
+    # current address.
+    from accounts.models import Company
+
+    _entry(active_contract, datetime.date(2026, 10, 1))
+    Company.objects.filter(pk=northstar.pk).update(billing_email='new-billing@northstar.test')
+
+    run_billing(northstar, OCTOBER, admin_user)
+
+    assert InvoiceEmail.objects.filter(recipient='new-billing@northstar.test').exists()
+    assert not InvoiceEmail.objects.filter(recipient='billing@northstar.test').exists()

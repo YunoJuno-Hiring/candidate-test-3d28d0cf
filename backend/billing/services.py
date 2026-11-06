@@ -62,7 +62,9 @@ def run_billing(company: Company, period: datetime.date, run_by) -> BillingRun:
     with transaction.atomic():
         # Serialise runs per company. A concurrent run waits here and, once the
         # first commits, sees its invoices and lines, so it creates nothing twice.
-        Company.objects.select_for_update().get(pk=company.pk)
+        # Use the row as read under the lock from here on: the instance passed
+        # in may be stale (e.g. its billing_email changed while this run waited).
+        company = Company.objects.select_for_update().get(pk=company.pk)
 
         run = BillingRun.objects.create(company=company, period=period, run_by=run_by)
 
