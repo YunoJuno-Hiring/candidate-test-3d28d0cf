@@ -190,7 +190,7 @@ class TimesheetDetailView(APIView):
         # Once an entry is on an invoice it can't change, for anyone: otherwise
         # an issued invoice and its timesheet would disagree (e.g. the company
         # invoiced for work it later rejected). Corrections would need a credit note.
-        if hasattr(entry, 'invoice_line'):
+        if entry.is_invoiced:
             return Response(
                 {'detail': 'This entry has been invoiced and can no longer be changed.'},
                 status=status.HTTP_409_CONFLICT,
