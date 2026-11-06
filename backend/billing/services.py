@@ -24,19 +24,18 @@ def line_amount(daily_rate: Decimal, hours: Decimal) -> Decimal:
     return (daily_rate * hours / HOURS_PER_DAY).quantize(PENNY, rounding=ROUND_HALF_UP)
 
 
-def parse_period(value: str) -> datetime.date:
+def parse_period(value: str, allow_future: bool = False) -> datetime.date:
     """Parse a 'YYYY-MM' billing month into its first day.
 
-    Raises ValueError for a malformed value or a month in the future. The
-    current month is allowed: entries approved later in it roll into the next
-    month's invoice.
+    Raises ValueError for a malformed value or, unless allow_future, a month in
+    the future. The current month is allowed: entries approved later in it roll
+    into the next month's invoice.
     """
     try:
         period = datetime.datetime.strptime(value, '%Y-%m').date()
     except (TypeError, ValueError):
         raise ValueError('Month must be in YYYY-MM format.')
-    today = timezone.localdate()
-    if period > today.replace(day=1):
+    if not allow_future and period > timezone.localdate().replace(day=1):
         raise ValueError('Cannot bill a future month.')
     return period
 
