@@ -4,6 +4,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from accounts.models import Freelancer
 from .models import Contract, TimesheetEntry
 from .serializers import (
     ContractCreateSerializer,
@@ -16,6 +17,14 @@ from .serializers import (
 CREATE_FIELDS = {'contract', 'date', 'hours'}
 ADMIN_EDITABLE_FIELDS = {'status', 'rejection_reason'}
 FREELANCER_EDITABLE_FIELDS = {'hours', 'date'}
+
+
+def _lock_freelancer(freelancer):
+    # The 24-hours-a-day check reads the freelancer's other entries for that
+    # date. Locking the freelancer makes their timesheet writes run one at a
+    # time, so two simultaneous requests can't both pass the check (e.g. 16h on
+    # two contracts for the same day). Must be called inside a transaction.
+    Freelancer.objects.select_for_update().get(pk=freelancer.pk)
 
 
 class ContractListView(APIView):
@@ -135,10 +144,11 @@ class TimesheetListCreateView(APIView):
         except (Contract.DoesNotExist, ValueError, TypeError):
             return Response({'contract': 'Invalid contract.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        serializer = TimesheetEntrySerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-
-        entry = serializer.save(contract=contract, status=TimesheetEntry.STATUS_SUBMITTED)
+        with transaction.atomic():
+            _lock_freelancer(request.user.freelancer)
+            serializer = TimesheetEntrySerializer(data=request.data)
+            serializer.is_valid(raise_exception=True)
+            entry = serializer.save(contract=contract, status=TimesheetEntry.STATUS_SUBMITTED)
         return Response(TimesheetEntrySerializer(entry).data, status=status.HTTP_201_CREATED)
 
 
@@ -226,6 +236,7 @@ class TimesheetDetailView(APIView):
                     {'detail': 'Only draft or submitted entries can be edited.'},
                     status=status.HTTP_409_CONFLICT,
                 )
+            _lock_freelancer(user.freelancer)
             data = request.data
 
         serializer = TimesheetEntrySerializer(entry, data=data, partial=True)
