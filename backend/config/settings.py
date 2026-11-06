@@ -87,6 +87,10 @@ STATIC_URL = '/static/'
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 LANGUAGE_CODE = 'en-us'
-TIME_ZONE = 'UTC'
+# UK business (GBP): "today" and "this month" for billing and timesheet dates
+# must match the UK calendar, not UTC. With UTC, the Billing page's default
+# month was refused as "future" between 00:00 and 01:00 BST on the 1st.
+# Timestamps are still stored in UTC (USE_TZ = True).
+TIME_ZONE = 'Europe/London'
 USE_I18N = True
 USE_TZ = True
