@@ -197,3 +197,42 @@ def test_errors_reveal_nothing_about_someone_elses_contract(freelancer_client, n
 
     assert resp.status_code == 400
     assert resp.data == {'contract': 'Invalid contract.'}
+
+
+# --- concurrency ---
+
+@pytest.mark.django_db(transaction=True)
+def test_simultaneous_requests_cannot_exceed_the_daily_total(freelancer_user, contract, second_contract):
+    # Two real transactions racing on Postgres: 16h on each contract for the
+    # same day. Locking the freelancer makes the second request wait, see the
+    # first's 16h, and fail. Without the lock both would pass the check (32h).
+    import threading
+
+    from django.db import connection
+    from rest_framework.authtoken.models import Token
+    from rest_framework.test import APIClient
+
+    token, _ = Token.objects.get_or_create(user=freelancer_user)
+    barrier = threading.Barrier(2)
+    statuses, errors = [], []
+
+    def log(target):
+        try:
+            client = APIClient()
+            client.credentials(HTTP_AUTHORIZATION=f'Token {token.key}')
+            barrier.wait()
+            statuses.append(_log(client, target, hours='16').status_code)
+        except Exception as exc:  # surfaced by the assertion below
+            errors.append(exc)
+        finally:
+            connection.close()
+
+    threads = [threading.Thread(target=log, args=(c,)) for c in (contract, second_contract)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert errors == []
+    assert sorted(statuses) == [201, 400]
+    assert TimesheetEntry.objects.count() == 1
