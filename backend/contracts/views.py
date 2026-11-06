@@ -12,6 +12,12 @@ from .serializers import (
 )
 
 
+# Fields each kind of timesheet request may send; anything else is refused.
+CREATE_FIELDS = {'contract', 'date', 'hours'}
+ADMIN_EDITABLE_FIELDS = {'status', 'rejection_reason'}
+FREELANCER_EDITABLE_FIELDS = {'hours', 'date'}
+
+
 class ContractListView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -115,21 +121,25 @@ class TimesheetListCreateView(APIView):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        serializer = TimesheetEntrySerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
+        disallowed = set(request.data.keys()) - CREATE_FIELDS
+        if disallowed:
+            return Response(
+                {field: 'This field cannot be set.' for field in sorted(disallowed)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
+        # Ownership first, so validation errors never describe someone else's contract.
         contract_id = request.data.get('contract')
         try:
             contract = Contract.objects.get(pk=contract_id, freelancer=request.user.freelancer)
-        except Contract.DoesNotExist:
+        except (Contract.DoesNotExist, ValueError, TypeError):
             return Response({'contract': 'Invalid contract.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        serializer = TimesheetEntrySerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
 
         entry = serializer.save(contract=contract, status=TimesheetEntry.STATUS_SUBMITTED)
         return Response(TimesheetEntrySerializer(entry).data, status=status.HTTP_201_CREATED)
-
-
-ADMIN_EDITABLE_FIELDS = {'status', 'rejection_reason'}
-FREELANCER_EDITABLE_FIELDS = {'hours', 'date'}
 
 
 class TimesheetDetailView(APIView):
