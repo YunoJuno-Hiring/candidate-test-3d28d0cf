@@ -94,8 +94,7 @@ def run_billing(company: Company, period: datetime.date, run_by) -> BillingRun:
             # next period's invoice.
             if freelancer.id in already_invoiced:
                 continue
-            invoice = _create_invoice(run, company, freelancer, period, freelancer_entries)
-            email_ids.extend(invoice.emails.values_list('id', flat=True))
+            email_ids.extend(_create_invoice(run, company, freelancer, period, freelancer_entries))
             run.invoices_generated += 1
 
         run.save(update_fields=['invoices_generated'])
@@ -107,7 +106,8 @@ def run_billing(company: Company, period: datetime.date, run_by) -> BillingRun:
     return run
 
 
-def _create_invoice(run, company, freelancer, period, entries) -> Invoice:
+def _create_invoice(run, company, freelancer, period, entries) -> list[int]:
+    """Create one invoice with its lines and outbox rows; return the outbox row ids."""
     invoice = Invoice.objects.create(run=run, company=company, freelancer=freelancer, period=period)
     # The number embeds the primary key, which only exists after the insert.
     invoice.number = f'INV-{period:%Y-%m}-{invoice.pk:06d}'
@@ -133,10 +133,12 @@ def _create_invoice(run, company, freelancer, period, entries) -> Invoice:
     for address in (company.billing_email, freelancer.user.email):
         if address and address.lower() not in {r.lower() for r in recipients}:
             recipients.append(address)
-    InvoiceEmail.objects.bulk_create(
+    emails = InvoiceEmail.objects.bulk_create(
         InvoiceEmail(invoice=invoice, recipient=address) for address in recipients
     )
-    return invoice
+    # Postgres returns the new ids from bulk_create, so no query is needed to
+    # find which rows to send after commit.
+    return [email.pk for email in emails]
 
 
 # After this many failed attempts an email is left as failed for a person to

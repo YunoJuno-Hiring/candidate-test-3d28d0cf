@@ -316,3 +316,21 @@ def test_concurrent_runs_bill_each_entry_once(northstar, admin_user, active_cont
     assert sorted(results) == [0, 1]
     assert Invoice.objects.count() == 1
     assert InvoiceLine.objects.count() == 1
+
+
+# --- efficiency ---
+
+@pytest.mark.django_db
+def test_run_does_not_query_back_the_email_rows_it_created(northstar, admin_user, active_contract):
+    # The outbox row ids come back from bulk_create; re-reading them would add
+    # one query per invoice inside the company-locked transaction.
+    from django.db import connection
+    from django.test.utils import CaptureQueriesContext
+
+    _entry(active_contract, datetime.date(2026, 10, 1))
+
+    with CaptureQueriesContext(connection) as ctx:
+        run_billing(northstar, OCTOBER, admin_user)
+
+    email_queries = [q['sql'] for q in ctx.captured_queries if 'billing_invoiceemail' in q['sql']]
+    assert email_queries and all(sql.lstrip().upper().startswith('INSERT') for sql in email_queries)
