@@ -47,7 +47,12 @@ def test_admin_runs_billing(admin_client, admin_user, active_contract):
 
     assert resp.status_code == 201
     run = BillingRun.objects.get()
-    assert resp.data == {'run_id': run.id, 'invoices_generated': 1, 'emails_failed': 0, 'status': 'completed'}
+    # A plain db test never commits, so the on-commit sends don't run and both
+    # emails are still pending: the run must not claim it completed cleanly.
+    assert resp.data == {
+        'run_id': run.id, 'invoices_generated': 1,
+        'emails_failed': 0, 'emails_pending': 2, 'status': 'completed_with_errors',
+    }
     assert run.run_by == admin_user
 
 

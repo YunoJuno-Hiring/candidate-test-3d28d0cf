@@ -151,7 +151,7 @@ def test_billing_run_reports_sent_emails(admin_client, billable):
     resp = admin_client.post('/api/billing/runs/', {'month': '2026-10'})
 
     assert resp.status_code == 201
-    assert (resp.data['emails_failed'], resp.data['status']) == (0, 'completed')
+    assert (resp.data['emails_failed'], resp.data['emails_pending'], resp.data['status']) == (0, 0, 'completed')
     assert len(mail.outbox) == 2
 
 
@@ -217,3 +217,16 @@ def test_an_error_escaping_one_send_does_not_stop_the_others_or_fail_the_run(adm
     assert resp.status_code == 201
     assert resp.data['invoices_generated'] == 1
     assert send.call_count == 2
+
+
+@pytest.mark.django_db(transaction=True)
+def test_billing_run_reports_emails_left_pending(admin_client, billable):
+    # e.g. skipped because the retry command held the row at that moment: not
+    # failed, but not sent either, so the run isn't reported as completed.
+    with mock.patch('billing.services.send_invoice_email', return_value=False):
+        resp = admin_client.post('/api/billing/runs/', {'month': '2026-10'})
+
+    assert resp.status_code == 201
+    assert (resp.data['emails_failed'], resp.data['emails_pending'], resp.data['status']) == (
+        0, 2, 'completed_with_errors'
+    )

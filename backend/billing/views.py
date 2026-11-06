@@ -38,17 +38,20 @@ class BillingRunView(APIView):
             return Response({'month': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
         run = run_billing(request.user.company_admin.company, period, request.user)
-        # Invoices are committed even if some emails failed; those are retried
-        # outside the request.
-        emails_failed = InvoiceEmail.objects.filter(
-            invoice__run=run, status=InvoiceEmail.STATUS_FAILED
-        ).count()
+        # Invoices are committed even if some emails weren't sent; those are
+        # retried outside the request. "completed" only when every email of
+        # this run went out: a row can also still be pending, e.g. skipped
+        # because the retry command was sending it at the same moment.
+        run_emails = InvoiceEmail.objects.filter(invoice__run=run)
+        emails_failed = run_emails.filter(status=InvoiceEmail.STATUS_FAILED).count()
+        emails_pending = run_emails.filter(status=InvoiceEmail.STATUS_PENDING).count()
         return Response(
             {
                 'run_id': run.id,
                 'invoices_generated': run.invoices_generated,
                 'emails_failed': emails_failed,
-                'status': 'completed_with_errors' if emails_failed else 'completed',
+                'emails_pending': emails_pending,
+                'status': 'completed_with_errors' if emails_failed or emails_pending else 'completed',
             },
             status=status.HTTP_201_CREATED,
         )
