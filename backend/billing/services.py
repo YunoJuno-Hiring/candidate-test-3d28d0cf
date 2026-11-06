@@ -136,6 +136,20 @@ def _create_invoice(run, company, freelancer, period, entries) -> Invoice:
     return invoice
 
 
+# After this many failed attempts an email is left as failed for a person to
+# look at, instead of being retried forever.
+MAX_EMAIL_ATTEMPTS = 5
+
+
+def retryable_emails():
+    """Outbox rows the retry command should try: failed rows, and pending rows
+    whose first send never happened (e.g. the process stopped before the
+    on-commit send ran), below the attempt limit."""
+    return InvoiceEmail.objects.exclude(status=InvoiceEmail.STATUS_SENT).filter(
+        attempts__lt=MAX_EMAIL_ATTEMPTS
+    )
+
+
 def send_invoice_email(email_id: int) -> bool:
     """Try to deliver one outbox row. Returns True if the row is sent.
 
