@@ -79,4 +79,4 @@ class InvoiceDetailView(APIView):
             invoice = _invoices_for(request.user).prefetch_related('lines').get(pk=pk)
         except Invoice.DoesNotExist:
             return Response({'detail': 'Not found.'}, status=status.HTTP_404_NOT_FOUND)
-        return Response(InvoiceDetailSerializer(invoice).data)
+        return Response(InvoiceDetailSerializer(invoice, context={'request': request}).data)

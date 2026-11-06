@@ -250,3 +250,24 @@ def test_invoice_with_no_recipients_says_so(admin_client, northstar, admin_user,
     assert not invoice.emails.exists()
     assert admin_client.get('/api/invoices/?month=2026-10').data[0]['delivery_status'] == 'no_recipients'
     assert admin_client.get(f'/api/invoices/{invoice.id}/').data['delivery_status'] == 'no_recipients'
+
+
+@pytest.fixture
+def failed_delivery(october_invoice):
+    october_invoice.emails.update(status='failed', attempts=1, last_error='SMTPRecipientsRefused: 550 mail.internal.example rejected')
+    return october_invoice
+
+
+@pytest.mark.django_db
+def test_admin_sees_email_delivery_errors(admin_client, failed_delivery):
+    emails = admin_client.get(f'/api/invoices/{failed_delivery.id}/').data['emails']
+
+    assert all(e['last_error'].startswith('SMTPRecipientsRefused') for e in emails)
+
+
+@pytest.mark.django_db
+def test_freelancer_does_not_see_email_delivery_errors(freelancer_client, failed_delivery):
+    emails = freelancer_client.get(f'/api/invoices/{failed_delivery.id}/').data['emails']
+
+    assert emails and all('last_error' not in e for e in emails)
+    assert all(e['status'] == 'failed' for e in emails)  # the status itself is still visible

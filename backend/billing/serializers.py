@@ -15,6 +15,15 @@ class InvoiceEmailSerializer(serializers.ModelSerializer):
         model = InvoiceEmail
         fields = ['recipient', 'status', 'attempts', 'last_error', 'sent_at']
 
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        # last_error holds raw mail-server errors (operational detail for the
+        # company admin), so it isn't shown to anyone else, such as the freelancer.
+        request = self.context.get('request')
+        if not (request and hasattr(request.user, 'company_admin')):
+            data.pop('last_error')
+        return data
+
 
 class InvoiceSerializer(serializers.ModelSerializer):
     # Company and freelancer details are read through the relations, not
