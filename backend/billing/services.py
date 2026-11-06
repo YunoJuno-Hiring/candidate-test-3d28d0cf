@@ -1,9 +1,12 @@
 import calendar
 import datetime
+import smtplib
 from collections import defaultdict
 from decimal import ROUND_HALF_UP, Decimal
 
+from django.core.mail import send_mail
 from django.db import transaction
+from django.template.loader import render_to_string
 from django.utils import timezone
 
 from accounts.models import Company
@@ -82,15 +85,22 @@ def run_billing(company: Company, period: datetime.date, run_by) -> BillingRun:
             Invoice.objects.filter(company=company, period=period).values_list('freelancer_id', flat=True)
         )
 
+        email_ids = []
         for freelancer, freelancer_entries in by_freelancer.items():
             # Entries approved after this period was invoiced roll into the
             # next period's invoice.
             if freelancer.id in already_invoiced:
                 continue
-            _create_invoice(run, company, freelancer, period, freelancer_entries)
+            invoice = _create_invoice(run, company, freelancer, period, freelancer_entries)
+            email_ids.extend(invoice.emails.values_list('id', flat=True))
             run.invoices_generated += 1
 
         run.save(update_fields=['invoices_generated'])
+
+        # Send only once the invoices are committed: an email must never go
+        # out for an invoice that was rolled back, and a failed send must never
+        # roll back an invoice. Failures stay on their outbox rows for retry.
+        transaction.on_commit(lambda: [send_invoice_email(email_id) for email_id in email_ids])
     return run
 
 
@@ -124,3 +134,45 @@ def _create_invoice(run, company, freelancer, period, entries) -> Invoice:
         InvoiceEmail(invoice=invoice, recipient=address) for address in recipients
     )
     return invoice
+
+
+def send_invoice_email(email_id: int) -> bool:
+    """Try to deliver one outbox row. Returns True if the row is sent.
+
+    The row is locked while sending, and a row another sender holds is
+    skipped, so the same email is never sent twice at once. A row already
+    sent is left alone. Delivery is at-least-once: if the process dies after
+    the mail server accepts the email but before the row is saved as sent,
+    a retry sends it again.
+    """
+    with transaction.atomic():
+        email = (
+            InvoiceEmail.objects.select_for_update(skip_locked=True, of=('self',))
+            .select_related('invoice__company', 'invoice__freelancer')
+            .filter(pk=email_id)
+            .first()
+        )
+        if email is None:
+            return False
+        if email.status == InvoiceEmail.STATUS_SENT:
+            return True
+
+        invoice = email.invoice
+        subject = f'Invoice {invoice.number}: {invoice.company.name}, {invoice.period:%B %Y}'
+        body = render_to_string(
+            'billing/invoice_email.txt', {'invoice': invoice, 'lines': invoice.lines.all()}
+        )
+
+        email.attempts += 1
+        try:
+            send_mail(subject, body, None, [email.recipient])
+        except (smtplib.SMTPException, OSError) as exc:
+            # OSError covers connection refused and timeouts.
+            email.status = InvoiceEmail.STATUS_FAILED
+            email.last_error = f'{type(exc).__name__}: {exc}'
+        else:
+            email.status = InvoiceEmail.STATUS_SENT
+            email.sent_at = timezone.now()
+            email.last_error = ''
+        email.save(update_fields=['status', 'attempts', 'last_error', 'sent_at'])
+    return email.status == InvoiceEmail.STATUS_SENT

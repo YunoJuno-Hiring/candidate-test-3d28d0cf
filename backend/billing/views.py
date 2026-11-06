@@ -3,7 +3,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import Invoice
+from .models import Invoice, InvoiceEmail
 from .serializers import InvoiceDetailSerializer, InvoiceSerializer
 from .services import parse_period, run_billing
 
@@ -34,11 +34,17 @@ class BillingRunView(APIView):
             return Response({'month': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
         run = run_billing(request.user.company_admin.company, period, request.user)
+        # Invoices are committed even if some emails failed; those are retried
+        # outside the request.
+        emails_failed = InvoiceEmail.objects.filter(
+            invoice__run=run, status=InvoiceEmail.STATUS_FAILED
+        ).count()
         return Response(
             {
                 'run_id': run.id,
                 'invoices_generated': run.invoices_generated,
-                'status': 'completed',
+                'emails_failed': emails_failed,
+                'status': 'completed_with_errors' if emails_failed else 'completed',
             },
             status=status.HTTP_201_CREATED,
         )

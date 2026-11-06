@@ -1,0 +1,14 @@
+{% autoescape off %}Invoice {{ invoice.number }}
+
+From:           {{ invoice.freelancer.name }}
+To:             {{ invoice.company.name }}
+Billing period: {{ invoice.period|date:"F Y" }}
+Issued:         {{ invoice.created_at|date:"j F Y" }}
+
+Date        Hours  Day rate   Amount
+{% for line in lines %}{{ line.date|date:"Y-m-d" }}  {{ line.hours }}   £{{ line.daily_rate }}    £{{ line.amount }}
+{% endfor %}
+Total: £{{ invoice.total }} (GBP, excluding VAT)
+
+Amounts are pro-rated on an 8-hour working day.
+{% endautoescape %}

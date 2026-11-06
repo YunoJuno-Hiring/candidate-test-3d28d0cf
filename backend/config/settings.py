@@ -78,6 +78,10 @@ EMAIL_HOST = config('EMAIL_HOST', default='localhost')
 EMAIL_PORT = config('EMAIL_PORT', default=1025, cast=int)
 EMAIL_USE_TLS = False
 EMAIL_USE_SSL = False
+DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default='billing@yunojuno.test')
+# Invoice emails are first sent inside the billing request, so a hanging mail
+# server must fail fast instead of hanging the request.
+EMAIL_TIMEOUT = config('EMAIL_TIMEOUT', default=10, cast=int)
 
 STATIC_URL = '/static/'
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
