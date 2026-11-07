@@ -151,6 +151,11 @@ class Command(BaseCommand):
 
                 hours = Decimal('7.5') if i % 5 == 0 else Decimal('8.0')
 
+                # Entries already on an invoice are left as they are: they can't
+                # change (re-seeding after a billing run must not rewrite them).
+                if TimesheetEntry.objects.filter(contract=contract, date=day, invoice_line__isnull=False).exists():
+                    entry_count += 1
+                    continue
                 TimesheetEntry.objects.update_or_create(
                     contract=contract,
                     date=day,

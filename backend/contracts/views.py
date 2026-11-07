@@ -1,14 +1,31 @@
+from django.db import transaction
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from accounts.models import Freelancer
+from core.api import object_body_error
 from .models import Contract, TimesheetEntry
 from .serializers import (
     ContractCreateSerializer,
     ContractSerializer,
     TimesheetEntrySerializer,
 )
+
+
+# Fields each kind of timesheet request may send; anything else is refused.
+CREATE_FIELDS = {'contract', 'date', 'hours'}
+ADMIN_EDITABLE_FIELDS = {'status', 'rejection_reason'}
+FREELANCER_EDITABLE_FIELDS = {'hours', 'date', 'status'}  # status: only to 'submitted'
+
+
+def _lock_freelancer(freelancer):
+    # The 24-hours-a-day check reads the freelancer's other entries for that
+    # date. Locking the freelancer makes their timesheet writes run one at a
+    # time, so two simultaneous requests can't both pass the check (e.g. 16h on
+    # two contracts for the same day). Must be called inside a transaction.
+    Freelancer.objects.select_for_update().get(pk=freelancer.pk)
 
 
 class ContractListView(APIView):
@@ -114,35 +131,55 @@ class TimesheetListCreateView(APIView):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        serializer = TimesheetEntrySerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
+        error = object_body_error(request)
+        if error:
+            return error
 
+        disallowed = set(request.data.keys()) - CREATE_FIELDS
+        if disallowed:
+            return Response(
+                {field: 'This field cannot be set.' for field in sorted(disallowed)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Ownership first, so validation errors never describe someone else's contract.
         contract_id = request.data.get('contract')
         try:
             contract = Contract.objects.get(pk=contract_id, freelancer=request.user.freelancer)
-        except Contract.DoesNotExist:
+        except (Contract.DoesNotExist, ValueError, TypeError):
             return Response({'contract': 'Invalid contract.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        entry = serializer.save(contract=contract, status=TimesheetEntry.STATUS_SUBMITTED)
+        with transaction.atomic():
+            _lock_freelancer(request.user.freelancer)
+            serializer = TimesheetEntrySerializer(data=request.data)
+            serializer.is_valid(raise_exception=True)
+            entry = serializer.save(contract=contract, status=TimesheetEntry.STATUS_SUBMITTED)
         return Response(TimesheetEntrySerializer(entry).data, status=status.HTTP_201_CREATED)
 
 
 class TimesheetDetailView(APIView):
     permission_classes = [IsAuthenticated]
 
+    # Atomic so the entry stays locked from the invoiced check until the save:
+    # a billing run locks entries the same way, so the two can't interleave.
+    @transaction.atomic
     def patch(self, request, pk):
+        error = object_body_error(request)
+        if error:
+            return error
+
         user = request.user
 
         if hasattr(user, 'company_admin'):
             try:
-                entry = TimesheetEntry.objects.get(
+                entry = TimesheetEntry.objects.select_for_update(of=('self',)).get(
                     pk=pk, contract__company=user.company_admin.company
                 )
             except TimesheetEntry.DoesNotExist:
                 return Response({'detail': 'Not found.'}, status=status.HTTP_404_NOT_FOUND)
         elif hasattr(user, 'freelancer'):
             try:
-                entry = TimesheetEntry.objects.get(
+                entry = TimesheetEntry.objects.select_for_update(of=('self',)).get(
                     pk=pk, contract__freelancer=user.freelancer
                 )
             except TimesheetEntry.DoesNotExist:
@@ -150,16 +187,87 @@ class TimesheetDetailView(APIView):
         else:
             return Response({'detail': 'Not found.'}, status=status.HTTP_404_NOT_FOUND)
 
-        new_status = request.data.get('status')
-        rejection_reason = request.data.get('rejection_reason')
-
-        if new_status == TimesheetEntry.STATUS_REJECTED and not rejection_reason:
+        # Once an entry is on an invoice it can't change, for anyone: otherwise
+        # an issued invoice and its timesheet would disagree (e.g. the company
+        # invoiced for work it later rejected). Corrections would need a credit note.
+        if entry.is_invoiced:
             return Response(
-                {'rejection_reason': 'This field is required when rejecting an entry.'},
+                {'detail': 'This entry has been invoiced and can no longer be changed.'},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        # Billing invoices whatever is approved, so each role may only change
+        # what it owns: admins decide entries, freelancers correct their own
+        # undecided hours. Anything else, such as moving an entry to another
+        # contract, is refused.
+        is_admin = hasattr(user, 'company_admin')
+        fields = set(request.data.keys())
+
+        # A freelancer's only status change is submitting their own work;
+        # approving and rejecting belong to the company admin.
+        if not is_admin and (
+            'rejection_reason' in fields
+            or ('status' in fields and request.data.get('status') != TimesheetEntry.STATUS_SUBMITTED)
+        ):
+            return Response(
+                {'detail': 'Only company admins can approve or reject entries.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        disallowed = fields - (ADMIN_EDITABLE_FIELDS if is_admin else FREELANCER_EDITABLE_FIELDS)
+        if disallowed:
+            return Response(
+                {field: 'This field cannot be changed.' for field in sorted(disallowed)},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        serializer = TimesheetEntrySerializer(entry, data=request.data, partial=True)
+        if is_admin:
+            new_status = request.data.get('status')
+            rejection_reason = request.data.get('rejection_reason')
+
+            if new_status not in (TimesheetEntry.STATUS_APPROVED, TimesheetEntry.STATUS_REJECTED):
+                return Response(
+                    {'status': 'Must be "approved" or "rejected".'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if entry.status == TimesheetEntry.STATUS_DRAFT:
+                return Response(
+                    {'detail': 'This entry has not been submitted yet.'},
+                    status=status.HTTP_409_CONFLICT,
+                )
+            if new_status == TimesheetEntry.STATUS_REJECTED and not rejection_reason:
+                return Response(
+                    {'rejection_reason': 'This field is required when rejecting an entry.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            # Approving rejected work is the only admin decision that adds hours
+            # back to the freelancer's daily total (the serializer re-checks it),
+            # so only then does it take the same lock as the freelancer's own
+            # writes. Other decisions leave the total unchanged or lower it, and
+            # don't need to wait on the freelancer.
+            if entry.status == TimesheetEntry.STATUS_REJECTED and new_status == TimesheetEntry.STATUS_APPROVED:
+                _lock_freelancer(entry.contract.freelancer)
+            # An approved entry never keeps a reason from an earlier rejection.
+            data = {
+                'status': new_status,
+                'rejection_reason': rejection_reason if new_status == TimesheetEntry.STATUS_REJECTED else None,
+            }
+        else:
+            # Approved hours are signed off; drafts, submitted and rejected
+            # entries can still be corrected and (re)submitted.
+            if entry.status == TimesheetEntry.STATUS_APPROVED:
+                return Response(
+                    {'detail': 'Approved entries can no longer be edited.'},
+                    status=status.HTTP_409_CONFLICT,
+                )
+            _lock_freelancer(user.freelancer)
+            data = {field: request.data.get(field) for field in fields}
+            # Correcting rejected work sends it back for review, without the
+            # old reason, so it can't be billed until an admin approves it.
+            if entry.status == TimesheetEntry.STATUS_REJECTED and fields:
+                data['status'] = TimesheetEntry.STATUS_SUBMITTED
+                data['rejection_reason'] = None
+
+        serializer = TimesheetEntrySerializer(entry, data=data, partial=True)
         serializer.is_valid(raise_exception=True)
         serializer.save()
         return Response(serializer.data)

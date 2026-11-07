@@ -78,11 +78,20 @@ EMAIL_HOST = config('EMAIL_HOST', default='localhost')
 EMAIL_PORT = config('EMAIL_PORT', default=1025, cast=int)
 EMAIL_USE_TLS = False
 EMAIL_USE_SSL = False
+DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default='billing@yunojuno.test')
+# Invoice emails are first sent inside the billing request, so a hanging mail
+# server must fail fast instead of hanging the request.
+EMAIL_TIMEOUT = config('EMAIL_TIMEOUT', default=10, cast=int)
 
 STATIC_URL = '/static/'
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 LANGUAGE_CODE = 'en-us'
-TIME_ZONE = 'UTC'
+# UK business (GBP): "today" must follow the UK calendar, not UTC. It decides
+# when a month has ended and can be billed (with UTC, just after midnight BST
+# on the 1st the month that had just ended in the UK still counted as running)
+# and the "no future dates" rule for timesheets. Timestamps are still stored in
+# UTC (USE_TZ = True).
+TIME_ZONE = 'Europe/London'
 USE_I18N = True
 USE_TZ = True
